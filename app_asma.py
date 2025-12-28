@@ -1,28 +1,39 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-import os
-import warnings
+from streamlit_gsheets import GSheetsConnection
 
-warnings.simplefilter(action='ignore', category=FutureWarning)
 st.set_page_config(page_title="Monitor Asma", page_icon="🫁", layout="centered")
 
-ARQUIVO_DADOS = 'historico_asma.csv'
+# --- CONEXÃO COM GOOGLE SHEETS ---
+# Cria a conexão
+conn = st.connection("gsheets", type=GSheetsConnection)
 
 def carregar_dados():
-    if not os.path.exists(ARQUIVO_DADOS):
+    # Lê os dados direto da planilha (aba 'Dados' ou a primeira aba)
+    # ttl=0 garante que ele não use cache antigo e pegue dados frescos
+    try:
+        df = conn.read(worksheet="Dados", usecols=[0, 1], ttl=0)
+        # Garante que as colunas existem mesmo se a planilha estiver vazia
+        if df.empty:
+            return pd.DataFrame(columns=["DataHora", "Status"])
+        return df
+    except:
         return pd.DataFrame(columns=["DataHora", "Status"])
-    return pd.read_csv(ARQUIVO_DADOS)
 
 def salvar_registro(status):
-    df = carregar_dados()
-    novo_registro = pd.DataFrame({"DataHora": [datetime.now()], "Status": [status]})
-    if df.empty: df = novo_registro
-    else: df = pd.concat([df, novo_registro], ignore_index=True)
-    df.to_csv(ARQUIVO_DADOS, index=False)
-    return df
+    df_antigo = carregar_dados()
+    novo_registro = pd.DataFrame({"DataHora": [datetime.now().strftime("%Y-%m-%d %H:%M:%S")], "Status": [status]})
+    
+    # Junta o antigo com o novo
+    df_atualizado = pd.concat([df_antigo, novo_registro], ignore_index=True)
+    
+    # Escreve de volta no Google Sheets
+    conn.update(worksheet="Dados", data=df_atualizado)
+    return df_atualizado
 
-st.title("🫁 Controle de Asma")
+# --- LÓGICA (Igual ao anterior) ---
+st.title("🫁 Controle de Asma (Nuvem)")
 df = carregar_dados()
 
 ultimo_uso = None
@@ -34,42 +45,32 @@ if not df.empty:
     ultimo_uso = df['DataHora'].max()
     tempo_decorrido = datetime.now() - ultimo_uso
     
-    # Lógica das 8 horas
     if tempo_decorrido < timedelta(hours=8):
         pode_usar = False
         horas_restantes = timedelta(hours=8) - tempo_decorrido
 
 # --- INTERFACE ---
 if ultimo_uso:
-    st.metric(label="Último uso", value=ultimo_uso.strftime('%H:%M'), delta=f"{int(tempo_decorrido.total_seconds()//3600)}h atrás" if ultimo_uso else None)
+    st.metric(label="Último uso", value=ultimo_uso.strftime('%H:%M'), delta=f"Há {int(tempo_decorrido.total_seconds()//3600)}h")
 
 if pode_usar:
-    st.success("✅ **LIBERADO!** Pode usar se necessário.")
+    st.success("✅ LIBERADO")
     bloqueado = False
-    msg_botao = "💨 REGISTRAR USO (REGULAR)"
+    msg_botao = "💨 REGISTRAR USO"
 else:
     segundos = horas_restantes.total_seconds()
-    horas = int(segundos // 3600)
-    mins = int((segundos % 3600) // 60)
-    st.error(f"⛔ **AGUARDE!** Faltam {horas}h {mins}m.")
-    
-    # Trava de segurança
+    st.error(f"⛔ AGUARDE: {int(segundos // 3600)}h {int((segundos % 3600) // 60)}m")
     bloqueado = True
-    msg_botao = "⏳ AGUARDANDO TEMPO..."
+    msg_botao = "⏳ AGUARDANDO..."
     
-    # Checkbox para destravar em emergência
-    st.markdown("---")
-    if st.checkbox("🚨 É uma emergência? (Destravar botão)"):
+    if st.checkbox("🚨 Emergência?"):
         bloqueado = False
-        msg_botao = "⚠️ REGISTRAR USO DE EMERGÊNCIA"
+        msg_botao = "⚠️ REGISTRAR EMERGÊNCIA"
 
-st.markdown("###") # Espaço
+st.markdown("###")
 if st.button(msg_botao, disabled=bloqueado, type="primary" if not bloqueado else "secondary", use_container_width=True):
     status = "Regular" if pode_usar else "Emergência"
-    salvar_registro(status)
-    st.toast('Registrado!', icon='✅')
+    with st.spinner('Salvando no Google Sheets...'):
+        salvar_registro(status)
+    st.toast('Salvo na nuvem!', icon='☁️')
     st.rerun()
-
-with st.expander("Histórico"):
-    if not df.empty:
-        st.dataframe(df.sort_values(by="DataHora", ascending=False).head(5), use_container_width=True)
